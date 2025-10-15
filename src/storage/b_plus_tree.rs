@@ -103,6 +103,35 @@ impl<K> BPlusTree<K>
 where
     K: Ord + Clone,
 {
+    fn new(mut data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Self {
+        // FIXME: 设定页大小，改叶子结点最大数据条数
+        let leaf_max_entries = 10;
+        let leaves = BPlusTree::<K>::build_leaf_nodes(data_set, leaf_max_entries);
+        todo!()
+    }
+
+    // TODO: 多线程构建叶子节点
+    fn build_leaf_nodes(mut data_set: Vec<DataEntry<K>>, leaf_max_entries: usize) -> Vec<Rc<RefCell<BPlusTreeNode<K>>>> {
+        let mut out: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = vec![];
+        while !data_set.is_empty() {
+            // 先分块，得到一个叶子节点
+            let rest = data_set.split_off(leaf_max_entries);
+            let leaf = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
+                entries: data_set,
+                next: None,
+            })));
+            if let Some(prev) = out.last() {
+                let mut prev_borrow = prev.borrow_mut();
+                if let BPlusTreeNode::Leaf(prev_inner) = &mut *prev_borrow {
+                    prev_inner.next = Some(Rc::clone(&leaf));
+                }
+            }
+            out.push(leaf);
+            data_set = rest;
+        }
+        out
+    }
+
     /// 返回序列化的数据数组
     fn get_all_entries(&self) -> Vec<SerializedData> {
         // TODO: 修改 BPlusTree 定义后重写这一段
@@ -170,50 +199,55 @@ where
         }
     }
 
-    /// 插入函数。
-    /// 插入成功时，如果不需要分裂，返回 `Ok(None)`
-    /// 插入成功时，如果需要分裂，返回新产生的两个 key 和它们中间的节点
-    /// 插入失败时，返回一个 `BPlusTreeError`
-    /// 递归插入，返回时处理需要分裂的情况
-    /// FIXME: 修改返回值类型
-    fn insert(&self, current: Rc<RefCell<BPlusTreeNode<K>>>, entry: DataEntry<K>) -> Result<Option<(K, Rc<RefCell<BPlusTreeNode<K>>>)>, BPlusTreeError> {
-        let mut current_borrow = current.borrow_mut();
-        match &mut *current_borrow {
-            BPlusTreeNode::Leaf(leaf) => {
-                // 插入数据
-                let insert_pos = leaf.entries.partition_point(|x| *x < entry);
-                leaf.entries.insert(insert_pos, entry);
-                // 分裂叶子节点
-                if leaf.entries.len() > self.leaf_max_entries {
-                    // FIXME
-                    let right_entries = leaf.entries.split_off(leaf.entries.len() / 2);
-                    let new_key = leaf.entries.last().unwrap().key.clone();
-                    let new_leaf = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
-                        entries: right_entries,
-                        next: leaf.next.clone(),
-                    })));
-                    leaf.next = Some(new_leaf.clone());
-                    return Ok(Some((new_key, new_leaf)));
-                }
-            },
-            BPlusTreeNode::Internal(internal) => {
-                // 递归插入
-                let insert_pos = internal.keys.partition_point(|x| *x < entry.key);
-                match self.insert(Rc::clone(&internal.children[insert_pos]), entry) {
-                    Ok(None) => return Ok(None),
-                    // FIXME
-                    Ok(Some((new_key, new_node))) => {
-                        // 用新的 key 代替原来的 key，再在后面插入新节点 key 的最大值
-                    },
-                    Err(err) => return Err(err),
-                }
-                // 插入新的 key 和 child
-            }
-        }
-        // 分裂中间节点
-        // 特判根节点
-        Ok(None)
-    }
+
+    // /// 需要处理一种情况：子节点的最大值改变了？插入时好像不可能出现这种情况。这样有一个问题是可能一个节点会
+
+    // /// 插入函数。
+    // /// 插入成功时，如果不需要分裂，返回 `Ok(None)`
+    // /// 插入成功时，如果需要分裂，返回新产生的两个 key 和它们中间的节点
+    // /// 插入失败时，返回一个 `BPlusTreeError`
+    // /// 递归插入，返回时处理需要分裂的情况
+    // /// FIXME: 修改返回值类型
+    // fn insert(&self, current: Rc<RefCell<BPlusTreeNode<K>>>, entry: DataEntry<K>) -> Result<Option<(K, Rc<RefCell<BPlusTreeNode<K>>>, K)>, BPlusTreeError> {
+    //     let mut current_borrow = current.borrow_mut();
+    //     match &mut *current_borrow {
+    //         BPlusTreeNode::Leaf(leaf) => {
+    //             // 插入数据
+    //             let insert_pos = leaf.entries.partition_point(|x| *x < entry);
+    //             leaf.entries.insert(insert_pos, entry);
+    //             // 分裂叶子节点
+    //             if leaf.entries.len() > self.leaf_max_entries {
+    //                 let right_entries = leaf.entries.split_off(leaf.entries.len() / 2);
+    //                 let left_key = leaf.entries.last().unwrap().key.clone();
+    //                 let right_key = right_entries.last().unwrap().key.clone();
+    //                 let new_leaf = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
+    //                     entries: right_entries,
+    //                     next: leaf.next.clone(),
+    //                 })));
+    //                 leaf.next = Some(new_leaf.clone());
+    //                 return Ok(Some((left_key, new_leaf, right_key)));
+    //             }
+    //         },
+    //         BPlusTreeNode::Internal(internal) => {
+    //             // 递归插入
+    //             let insert_pos = internal.keys.partition_point(|x| *x < entry.key);
+    //             match self.insert(Rc::clone(&internal.children[insert_pos]), entry) {
+    //                 Ok(None) => return Ok(None),
+    //                 // FIXME
+    //                 Ok(Some((left_key, new_node, right_key))) => {
+    //                     // 用新的 key 代替原来的 key，再在后面插入新节点 key 的最大值
+    //                 },
+    //                 Err(err) => return Err(err),
+    //             }
+    //             // 插入新的 key 和 child
+    //             // 分裂中间节点
+    //             // 特判是否
+    //             // 特判根节点
+    //         }
+    //     }
+        
+    //     Ok(None)
+    // }
 }
 
 #[cfg(test)]
