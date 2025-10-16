@@ -103,7 +103,14 @@ impl<K> BPlusTree<K>
 where
     K: Ord + Clone,
 {
-    fn new(mut data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Self {
+    fn try_new(data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Result<Self, BPlusTreeError> {
+        if data_set.is_empty() {
+            return Err(BPlusTreeError::BPlusTreeBuildError);
+        }
+        return Ok(Self::new(data_set, max_data_length));
+    }
+
+    fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Self {
         // FIXME: 设定页大小，改叶子结点最大数据条数
         let leaf_max_entries = 10;
         let leaves = BPlusTree::<K>::build_leaf_nodes(data_set, leaf_max_entries);
