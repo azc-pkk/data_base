@@ -125,9 +125,17 @@ where
         let leaves = Self::build_leaf_nodes(data_set, leaf_max_entries);
         // FIXME: 设定页大小，改中间结点最大孩子数
         let max_children_cnt = 10;
-        // FIXME: 递归构建中间节点
-        let internals = Self::build_internal_nodes(leaves, max_children_cnt);
-        todo!()
+        // 构建中间节点
+        let mut internals = Self::build_internal_nodes(leaves, max_children_cnt);
+        // 只有一个节点时可以直接把它当根节点
+        while internals.len() != 1 {
+            internals = Self::build_internal_nodes(internals, max_children_cnt);
+        }
+        Self {
+            root: Rc::clone(&internals[0]),
+            leaf_max_entries,
+            max_children_cnt
+        }
     }
 
     fn get_max_key_of_node(node: Rc<RefCell<BPlusTreeNode<K>>>) -> K {
@@ -146,7 +154,14 @@ where
     fn build_internal_nodes(mut node_list: Vec<Rc<RefCell<BPlusTreeNode<K>>>>, max_children_cnt: usize) -> Vec<Rc<RefCell<BPlusTreeNode<K>>>> {
         let mut out: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = vec![];
         while !node_list.is_empty() {
-            let rest = node_list.split_off(max_children_cnt);
+            let rest = match node_list.len() {
+                x if x >= max_children_cnt => {
+                    node_list.split_off(max_children_cnt)
+                }
+                _ => {
+                    vec![]
+                }
+            };
             let keys: Vec<K> = node_list.iter()
                                         .map(|node| Self::get_max_key_of_node(Rc::clone(node)))
                                         .collect();
@@ -168,7 +183,14 @@ where
         let mut out: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = vec![];
         while !data_set.is_empty() {
             // 先分块，得到一个叶子节点
-            let rest = data_set.split_off(leaf_max_entries);
+            let rest = match data_set.len() {
+                x if x >= leaf_max_entries => {
+                    data_set.split_off(leaf_max_entries)
+                },
+                _ => {
+                    vec![]
+                }
+            };
             let leaf = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
                 entries: data_set,
                 next: None,
@@ -309,12 +331,9 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::{rc::Rc, vec};
-    use std::cell::RefCell;
-
     use rand::{distr::Alphanumeric, Rng};
 
-    use crate::storage::b_plus_tree::{BPlusTree, BPlusTreeNode, DataEntry, InternalNode, LeafNode, SerializedData};
+    use crate::storage::b_plus_tree::{BPlusTree, DataEntry, SerializedData};
 
     fn get_random_string(len: usize) -> String {
         // 生成一个随机字符串
@@ -325,73 +344,18 @@ mod test {
             .collect()
     }
 
-    /// 构建一个 3 层，有 18 项数据，9 个叶子结点，3 个中间节点，一个根节点的 B+ 树。 
-    fn get_a_b_plus_tree_with_data() -> (BPlusTree<i32>, Vec<SerializedData>) {
-        // 随机生成 18 项数据
-        let mut entries: Vec<DataEntry<i32>> = vec![];
-        for i in 0..18 {
-            entries.push(DataEntry {
-                key: i,
-                data: SerializedData::from(get_random_string(5))
-            });
-        }
-        let data: Vec<SerializedData> = entries.iter().map(|entry| entry.data.clone()).collect();
-        // 每两项数据组成一个 LeafNode
-        let mut leaves: Vec<Rc<RefCell<BPlusTreeNode<i32>>>> = vec![];
-        for _ in 0..9 {
-            let leaf = BPlusTreeNode::Leaf(LeafNode {
-                entries: entries.split_off(entries.len() - 2),
-                next: match leaves.is_empty() {
-                    true => None,
-                    false=> Some(Rc::new(RefCell::new(leaves[0].borrow().clone()))),
-                }
-            });
-            leaves.insert(0, Rc::new(RefCell::new(leaf)));
-        }
-        // 每三个 LeafNode 组成一个 InternalNode
-        let mut internals: Vec<Rc<RefCell<BPlusTreeNode<i32>>>> = vec![];
-        let mut internal_keys = vec![1, 3, 7, 9, 13, 15];
-        for i in 0..3 {
-            let internal = BPlusTreeNode::Internal(InternalNode {
-                keys: internal_keys.split_off(internal_keys.len() - 2),
-                children: leaves.split_off(leaves.len() - 3)
-            });
-            internals.insert(0, Rc::new(RefCell::new(internal)));
-        }
-        // 三个 InternalNode 组成根节点
-        let root = BPlusTreeNode::Internal(InternalNode {
-            keys: vec![5, 11],
-            children: vec![internals[0].clone(), internals[1].clone(), internals[2].clone()]
-        });
-        let tree = BPlusTree {
-            root: Rc::new(RefCell::new(root)),
-            leaf_max_entries: 100,
-            max_children_cnt: 100,
-        };
-        (tree, data)
-    }
-
     #[test]
-    fn get_all_entries_test() {
-        let (tree, supposed_result) = get_a_b_plus_tree_with_data();
+    fn new_test() {
+        let entries: Vec<DataEntry<i32>> = (0..20).into_iter().map(|i| DataEntry { key: i, data: SerializedData::from(get_random_string(10))}).collect();
+        let supposed_result = entries.clone();
+        let tree = BPlusTree::try_new(entries, 0, 0).unwrap();
         let result = tree.get_all_entries();
-        for i in 0..18 {
+        for i in 0..20 {
             println!("result: {:?}", result[i]);
             println!("supposed result: {:?}", supposed_result[i]);
-            assert_eq!(result[i].unserialize(), supposed_result[i].unserialize());
+            assert_eq!(supposed_result[i].data.unserialize(), result[i].unserialize());
         }
-    }
-
-    #[test]
-    fn get_entry_by_key_test() {
-        let (tree, data) = get_a_b_plus_tree_with_data();
-        assert!(match tree.get_entry_by_key(2) {
-            None => false,
-            Some(entry) => entry.unserialize() == data[2].unserialize()
-        });
-        assert!(match tree.get_entry_by_key(100) {
-            None => true,
-            _ => false
-        });
+        assert_eq!(tree.get_entry_by_key(12).unwrap().unserialize(), supposed_result[12].data.unserialize());
+        assert_eq!(tree.get_entry_by_key(-1).unwrap_or(SerializedData(String::from("failed"))).unserialize(), String::from("failed"));
     }
 }
