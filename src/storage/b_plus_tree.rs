@@ -70,7 +70,7 @@ where
 {
     /// key 为左边子树最大元素
     keys: Vec<K>,
-    /// children 比 keys 多一个
+    /// children 与 keys 数量相同
     children: Vec<Rc<RefCell<BPlusTreeNode<K>>>>
 }
 
@@ -183,6 +183,10 @@ where
                 match &*node_borrow {
                     BPlusTreeNode::Internal(internal) => {
                         let index = internal.keys.partition_point(|k| *k < key);
+                        // keys 与 children 大小一样，大于最大 key 说明没有
+                        if index == internal.keys.len() {
+                            return None;
+                        }
                         internal.children[index].clone()
                     },
                     BPlusTreeNode::Leaf(leaf) => {
