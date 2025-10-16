@@ -113,8 +113,22 @@ where
     fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Self {
         // FIXME: 设定页大小，改叶子结点最大数据条数
         let leaf_max_entries = 10;
+        // 构建叶子结点
         let leaves = BPlusTree::<K>::build_leaf_nodes(data_set, leaf_max_entries);
+        // 构建中间节点
         todo!()
+    }
+
+    fn get_max_key_of_node(node: Rc<RefCell<BPlusTreeNode<K>>>) -> K {
+        let node_borrow = node.borrow();
+        match &*node_borrow {
+            BPlusTreeNode::Internal(internal) => {
+                internal.keys.last().unwrap().clone()
+            },
+            BPlusTreeNode::Leaf(leaf) => {
+                leaf.entries.last().unwrap().key.clone()
+            }
+        }
     }
 
     // TODO: 多线程构建叶子节点
