@@ -97,25 +97,36 @@ where
     /// 
     /// 预计把一个节点映射为硬盘上的一页，所以需要根据数据条目大小动态调整
     leaf_max_entries: usize,
+
+    /// 中间结点最多存的数据条数
+    max_children_cnt: usize,
 }
 
 impl<K> BPlusTree<K>
 where
     K: Ord + Clone,
 {
-    fn try_new(data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Result<Self, BPlusTreeError> {
+    /// 尝试根据 `DataEntry` 数组构建 B+ 树
+    /// 
+    /// `max_data_length` 表示一条 entry 的最大大小
+    /// 
+    /// `max_key_size` 表示作为 key 的最大大小
+    fn try_new(data_set: Vec<DataEntry<K>>, max_data_length: usize, key_size: usize) -> Result<Self, BPlusTreeError> {
         if data_set.is_empty() {
             return Err(BPlusTreeError::BPlusTreeBuildError);
         }
-        return Ok(Self::new(data_set, max_data_length));
+        return Ok(Self::new(data_set, max_data_length, key_size));
     }
 
-    fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize) -> Self {
+    fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize, key_size: usize) -> Self {
         // FIXME: 设定页大小，改叶子结点最大数据条数
         let leaf_max_entries = 10;
         // 构建叶子结点
-        let leaves = BPlusTree::<K>::build_leaf_nodes(data_set, leaf_max_entries);
-        // 构建中间节点
+        let leaves = Self::build_leaf_nodes(data_set, leaf_max_entries);
+        // FIXME: 设定页大小，改中间结点最大孩子数
+        let max_children_cnt = 10;
+        // FIXME: 递归构建中间节点
+        let internals = Self::build_internal_nodes(leaves, max_children_cnt);
         todo!()
     }
 
@@ -129,6 +140,27 @@ where
                 leaf.entries.last().unwrap().key.clone()
             }
         }
+    }
+
+    // TODO: 并行构建中间节点
+    fn build_internal_nodes(mut node_list: Vec<Rc<RefCell<BPlusTreeNode<K>>>>, max_children_cnt: usize) -> Vec<Rc<RefCell<BPlusTreeNode<K>>>> {
+        let mut out: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = vec![];
+        while !node_list.is_empty() {
+            let rest = node_list.split_off(max_children_cnt);
+            let keys: Vec<K> = node_list.iter()
+                                        .map(|node| Self::get_max_key_of_node(Rc::clone(node)))
+                                        .collect();
+            let children: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = node_list.iter()
+                                                                        .map(|node| Rc::clone(node))
+                                                                        .collect();
+            let internal = Rc::new(RefCell::new(BPlusTreeNode::Internal(InternalNode {
+                keys,
+                children,
+            })));
+            out.push(internal);
+            node_list = rest;
+        }
+        out
     }
 
     // TODO: 多线程构建叶子节点
@@ -334,6 +366,7 @@ mod test {
         let tree = BPlusTree {
             root: Rc::new(RefCell::new(root)),
             leaf_max_entries: 100,
+            max_children_cnt: 100,
         };
         (tree, data)
     }
