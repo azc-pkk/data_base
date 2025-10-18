@@ -152,6 +152,7 @@ where
     }
 
     fn get_max_key_of_node(node: Rc<RefCell<BPlusTreeNode<K>>>) -> K {
+        // 要保证前面没有 borrow_mut？
         let node_borrow = node.borrow();
         match &*node_borrow {
             BPlusTreeNode::Internal(internal) => {
@@ -307,43 +308,91 @@ where
     }
 
     fn insert_recursive(&self, node: Rc<RefCell<BPlusTreeNode<K>>>, data: DataEntry<K>) -> InsertState<K> {
-        let mut node_borrow = node.borrow_mut();
-        match &mut *node_borrow {
-            BPlusTreeNode::Internal(internal) => {
-                let insert_pos = match internal.keys.partition_point(|k| *k < data.key) {
-                    // 此时插入值为所有值的最大值
-                    x if x == internal.keys.len() => x - 1,
-                    x => x
-                };
-                let result = self.insert_recursive(Rc::clone(&internal.children[insert_pos]), data);
-                if let InsertState::Splited(new_node) = result {
-                    // 新节点的最大 key
-                    internal.keys[insert_pos] = Self::get_max_key_of_node(Rc::clone(&new_node));
-                    // 老节点的最大 key
-                    internal.keys.insert(insert_pos, Self::get_max_key_of_node(Rc::clone(&node)));
-                    // 在老节点后面插入新节点
-                    internal.children.insert(insert_pos + 1, Rc::clone(&new_node));
-                    // 是否还需要分裂
-                    if internal.keys.len() > self.max_children_cnt {
-                        return InsertState::Splited(Self::spilt(Rc::clone(&node), self.max_children_cnt));
+        // let mut node_borrow = node.borrow_mut();
+        // match &mut *node_borrow {
+        //     BPlusTreeNode::Internal(internal) => {
+        //         let insert_pos = match internal.keys.partition_point(|k| *k < data.key) {
+        //             // 此时插入值为所有值的最大值
+        //             x if x == internal.keys.len() => x - 1,
+        //             x => x
+        //         };
+        //         let result = self.insert_recursive(Rc::clone(&internal.children[insert_pos]), data);
+        //         if let InsertState::Splited(new_node) = result {
+        //             // 新节点的最大 key
+        //             internal.keys[insert_pos] = Self::get_max_key_of_node(Rc::clone(&new_node));
+        //             // 老节点的最大 key
+        //             // 这里不能 drop，因为 insternal 要用
+        //             internal.keys.insert(insert_pos, Self::get_max_key_of_node(Rc::clone(&node)));
+        //             // 在老节点后面插入新节点
+        //             internal.children.insert(insert_pos + 1, Rc::clone(&new_node));
+        //             // 是否还需要分裂
+        //             if internal.keys.len() > self.max_children_cnt {
+        //                 return InsertState::Splited(Self::spilt(Rc::clone(&node), self.max_children_cnt));
+        //             }
+        //             // 不用分裂了
+        //             return InsertState::Success;
+        //         } else {
+        //             // 不需要更新 key
+        //             return result;
+        //         }
+        //     },
+        //     BPlusTreeNode::Leaf(leaf) => {
+        //         let insert_pos = leaf.entries.partition_point(|k| *k < data);
+        //         leaf.entries.insert(insert_pos, data);
+        //         if leaf.entries.len() > self.leaf_max_entries {
+        //             drop(node_borrow);
+        //             let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
+        //             return InsertState::Splited(Rc::clone(&new_node));
+        //         }
+        //         return InsertState::Success;
+        //     }
+        // }
+        let (insert_pos, child) = {
+            let mut node_borrow = node.borrow_mut();
+            match &mut *node_borrow {
+                BPlusTreeNode::Internal(internal) => {
+                    let insert_pos = match internal.keys.partition_point(|k| *k < data.key) {
+                        x if x == internal.keys.len() => x-1,
+                        x => x
+                    };
+                    (insert_pos, Rc::clone(&internal.children[insert_pos]))
+                },
+                BPlusTreeNode::Leaf(leaf) => {
+                    let insert_pos = leaf.entries.partition_point(|x| *x < data);
+                    leaf.entries.insert(insert_pos, data);
+                    if leaf.entries.len() > self.leaf_max_entries {
+                        drop(node_borrow);
+                        let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
+                        return InsertState::Splited(Rc::clone(&new_node));
                     }
-                    // 不用分裂了
                     return InsertState::Success;
-                } else {
-                    // 不需要更新 key
-                    return result;
                 }
-            },
-            BPlusTreeNode::Leaf(leaf) => {
-                let insert_pos = leaf.entries.partition_point(|k| *k < data);
-                leaf.entries.insert(insert_pos, data);
-                if leaf.entries.len() > self.leaf_max_entries {
-                    drop(node_borrow);
-                    let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
-                    return InsertState::Splited(Rc::clone(&new_node));
-                }
-                return InsertState::Success;
             }
+        };
+
+        let result = self.insert_recursive(child, data);
+        match result {
+            InsertState::Splited(new_node) => {
+                let old_key = Self::get_max_key_of_node(Rc::clone(&node));
+                let new_key = Self::get_max_key_of_node(Rc::clone(&new_node));
+
+                let mut node_borrow = node.borrow_mut();
+                if let BPlusTreeNode::Internal(internal) = &mut *node_borrow {
+                    internal.keys[insert_pos] = old_key;
+                    internal.keys.insert(insert_pos + 1, new_key);
+                    internal.children.insert(insert_pos + 1, Rc::clone(&new_node));
+
+                    if internal.keys.len() > self.max_children_cnt {
+                        drop(node_borrow);
+                        InsertState::Splited(Self::spilt(node, self.max_children_cnt))
+                    } else {
+                        InsertState::Success
+                    }
+                } else {
+                    unreachable!()
+                }
+            }
+            other => other,
         }
     }
 
@@ -414,6 +463,7 @@ mod test {
         }
         let result = tree.get_all_entries();
         for i in 0..50 {
+            println!("round {i}, supposed result: {}, actual result: {}", raw_entries[i].data.unserialize(), result[i].unserialize());
             assert_eq!(result[i].unserialize(), raw_entries[i].data.unserialize());
         }
     }
