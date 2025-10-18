@@ -1,5 +1,5 @@
 use std::{
-    cell::{Ref, RefCell}, collections::btree_map::Keys, rc::Rc
+    cell::{RefCell}, rc::Rc
 };
 use crate::error::BPlusTreeError;
 
@@ -133,11 +133,11 @@ where
 
     fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize, key_size: usize) -> Self {
         // FIXME: 设定页大小，改叶子结点最大数据条数
-        let leaf_max_entries = 10;
+        let leaf_max_entries = 1;
         // 构建叶子结点
         let leaves = Self::build_leaf_nodes(data_set, leaf_max_entries);
         // FIXME: 设定页大小，改中间结点最大孩子数
-        let max_children_cnt = 10;
+        let max_children_cnt = 2;
         // 构建中间节点
         let mut internals = Self::build_internal_nodes(leaves, max_children_cnt);
         // 只有一个节点时可以直接把它当根节点
@@ -152,14 +152,14 @@ where
     }
 
     fn get_max_key_of_node(node: Rc<RefCell<BPlusTreeNode<K>>>) -> K {
-        // 要保证前面没有 borrow_mut？
+        // 要保证前面没有 borrow_mut
         let node_borrow = node.borrow();
         match &*node_borrow {
             BPlusTreeNode::Internal(internal) => {
-                internal.keys.last().unwrap().clone()
+                internal.keys.last().cloned().expect("internal node is empty.")
             },
             BPlusTreeNode::Leaf(leaf) => {
-                leaf.entries.last().unwrap().key.clone()
+                leaf.entries.last().cloned().map(|x| x.key.clone()).expect("leaf node is empty.")
             }
         }
     }
@@ -221,8 +221,8 @@ where
         out
     }
 
-    /// 返回序列化的数据数组
-    pub fn get_all_entries(&self) -> Vec<SerializedData> {
+    /// 返回 `DataEntry` 数组
+    pub fn get_all_entries(&self) -> Vec<DataEntry<K>> {
         // TODO: 修改 BPlusTree 定义后重写这一段
         // 先找到最小叶子结点
         let mut node = self.root.clone();
@@ -247,7 +247,7 @@ where
                 let leaf_borrow = current_leaf.borrow();
                 if let BPlusTreeNode::Leaf(leaf) = &*leaf_borrow {
                     for entry in leaf.entries.iter() {
-                        out.push(entry.data.clone());
+                        out.push(entry.clone());
                     }
                     leaf.next.as_ref().map(|next| next.clone())
                 } else {
@@ -263,8 +263,8 @@ where
         out
     }
 
-    /// 返回序列化的数据。
-    pub fn get_entry_by_key(&self, key: K) -> Option<SerializedData> {
+    /// 返回`DataEntry`。
+    pub fn get_entry_by_key(&self, key: K) -> Option<DataEntry<K>> {
         let mut node = self.root.clone();
         loop {
             let maybe_next = {
@@ -281,7 +281,7 @@ where
                     BPlusTreeNode::Leaf(leaf) => {
                         for entry in leaf.entries.iter() {
                             if entry.key == key {
-                                return Some(entry.data.clone());
+                                return Some(entry.clone());
                             }
                         }
                         return None;
@@ -308,45 +308,6 @@ where
     }
 
     fn insert_recursive(&self, node: Rc<RefCell<BPlusTreeNode<K>>>, data: DataEntry<K>) -> InsertState<K> {
-        // let mut node_borrow = node.borrow_mut();
-        // match &mut *node_borrow {
-        //     BPlusTreeNode::Internal(internal) => {
-        //         let insert_pos = match internal.keys.partition_point(|k| *k < data.key) {
-        //             // 此时插入值为所有值的最大值
-        //             x if x == internal.keys.len() => x - 1,
-        //             x => x
-        //         };
-        //         let result = self.insert_recursive(Rc::clone(&internal.children[insert_pos]), data);
-        //         if let InsertState::Splited(new_node) = result {
-        //             // 新节点的最大 key
-        //             internal.keys[insert_pos] = Self::get_max_key_of_node(Rc::clone(&new_node));
-        //             // 老节点的最大 key
-        //             // 这里不能 drop，因为 insternal 要用
-        //             internal.keys.insert(insert_pos, Self::get_max_key_of_node(Rc::clone(&node)));
-        //             // 在老节点后面插入新节点
-        //             internal.children.insert(insert_pos + 1, Rc::clone(&new_node));
-        //             // 是否还需要分裂
-        //             if internal.keys.len() > self.max_children_cnt {
-        //                 return InsertState::Splited(Self::spilt(Rc::clone(&node), self.max_children_cnt));
-        //             }
-        //             // 不用分裂了
-        //             return InsertState::Success;
-        //         } else {
-        //             // 不需要更新 key
-        //             return result;
-        //         }
-        //     },
-        //     BPlusTreeNode::Leaf(leaf) => {
-        //         let insert_pos = leaf.entries.partition_point(|k| *k < data);
-        //         leaf.entries.insert(insert_pos, data);
-        //         if leaf.entries.len() > self.leaf_max_entries {
-        //             drop(node_borrow);
-        //             let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
-        //             return InsertState::Splited(Rc::clone(&new_node));
-        //         }
-        //         return InsertState::Success;
-        //     }
-        // }
         let (insert_pos, child) = {
             let mut node_borrow = node.borrow_mut();
             match &mut *node_borrow {
@@ -363,17 +324,18 @@ where
                     if leaf.entries.len() > self.leaf_max_entries {
                         drop(node_borrow);
                         let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
-                        return InsertState::Splited(Rc::clone(&new_node));
+                        return InsertState::Splited(new_node);
                     }
                     return InsertState::Success;
                 }
             }
         };
 
-        let result = self.insert_recursive(child, data);
+        let result = self.insert_recursive(Rc::clone(&child), data);
         match result {
-            InsertState::Splited(new_node) => {
-                let old_key = Self::get_max_key_of_node(Rc::clone(&node));
+                InsertState::Splited(new_node) => {
+                // 使用被分裂的 child 节点的最大键作为 old_key（而不是 parent node）
+                let old_key = Self::get_max_key_of_node(Rc::clone(&child));
                 let new_key = Self::get_max_key_of_node(Rc::clone(&new_node));
 
                 let mut node_borrow = node.borrow_mut();
@@ -396,19 +358,24 @@ where
         }
     }
 
+    // FIXME：这里用实际大小的一半可以，用 max_size 的一半会报错，这是为什么？
     /// 返回分裂出的右边节点。左边节点保存在原本的变量中。
     fn spilt(node: Rc<RefCell<BPlusTreeNode<K>>>, max_size: usize) -> Rc<RefCell<BPlusTreeNode<K>>> {
         let mut node_borrow = node.borrow_mut();
         match &mut *node_borrow {
             BPlusTreeNode::Internal(internal) => {
+                // let mid = max_size / 2;
+                let mid = internal.keys.len() / 2;
                 Rc::new(RefCell::new(BPlusTreeNode::Internal(InternalNode {
-                    keys: internal.keys.split_off(max_size / 2),
-                    children: internal.children.split_off(max_size / 2),
+                    keys: internal.keys.split_off(mid),
+                    children: internal.children.split_off(mid),
                 })))
             },
             BPlusTreeNode::Leaf(leaf) => {
+                // let mid = max_size / 2;
+                let mid = leaf.entries.len() / 2;
                 let new_node = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
-                    entries: leaf.entries.split_off(max_size / 2),
+                    entries: leaf.entries.split_off(mid),
                     next: leaf.next.clone()
                 })));
                 leaf.next = Some(Rc::clone(&new_node));
@@ -442,29 +409,57 @@ mod test {
         for i in 0..20 {
             println!("result: {:?}", result[i]);
             println!("supposed result: {:?}", supposed_result[i]);
-            assert_eq!(supposed_result[i].data.unserialize(), result[i].unserialize());
+            assert_eq!(supposed_result[i].data.unserialize(), result[i].data.unserialize());
         }
-        assert_eq!(tree.get_entry_by_key(12).unwrap().unserialize(), supposed_result[12].data.unserialize());
-        assert_eq!(tree.get_entry_by_key(-1).unwrap_or(SerializedData(String::from("failed"))).unserialize(), String::from("failed"));
+        assert_eq!(tree.get_entry_by_key(12).unwrap().data.unserialize(), supposed_result[12].data.unserialize());
+        assert_eq!(tree.get_entry_by_key(-1), None);
     }
 
     #[test]
-    fn insert_test() {
+    fn ordered_insert_test() {
         // 生成 50 个 DataEntry
         let raw_entries: Vec<DataEntry<i32>> = (0..50).into_iter().map(|i| DataEntry { key: i, data: SerializedData::from(get_random_string(10)) }).collect();
         let mut build_entries = raw_entries.clone();
-        let mut test_entries = build_entries.split_off(30);
+        let test_entries = build_entries.split_off(1);
+
+        let mut tree = BPlusTree::new(build_entries, 0, 0);
+        for entry in test_entries.iter() {
+            tree.insert(entry.to_owned()).expect("something wrong");
+        }
+
+        let result = tree.get_all_entries();
+        for i in 0..50 {
+            assert_eq!(result[i].data.unserialize(), raw_entries[i].data.unserialize());
+        }
+    }
+
+    #[test]
+    fn random_insert_test() {
+        // 生成 50 个 DataEntry
+        let raw_entries: Vec<DataEntry<i32>> = (0..50).into_iter().map(|i| DataEntry { key: i, data: SerializedData::from(get_random_string(10)) }).collect();
+        let mut build_entries = raw_entries.clone();
+        let mut test_entries = build_entries.split_off(20);
         let mut rng = rand::rng();
         test_entries.shuffle(&mut rng);
 
+        println!("build_entries:");
+        for entry in build_entries.iter() {
+            println!("DataEntry{{ key: {}, data: {:?} }},", entry.key, entry.data);
+        }
+        println!("insert_entries:");
+        for entry in test_entries.iter() {
+            println!("DataEntry{{ key: {}, data: {:?} }},", entry.key, entry.data);
+        }
+
         let mut tree = BPlusTree::new(build_entries, 0, 0);
-        for i in 0..20 {
-            tree.insert(test_entries[i].clone()).expect("somthing wrong");
+        for entry in test_entries.iter() {
+            tree.insert(entry.to_owned()).expect("something wrong");
         }
         let result = tree.get_all_entries();
         for i in 0..50 {
-            println!("round {i}, supposed result: {}, actual result: {}", raw_entries[i].data.unserialize(), result[i].unserialize());
-            assert_eq!(result[i].unserialize(), raw_entries[i].data.unserialize());
+            println!("round {i}, supposed result: {}, actual result: {}", raw_entries[i].data.unserialize(), result[i].data.unserialize());
+            println!("  supposed key: {}, actual key: {}", raw_entries[i].key, result[i].key);
+            assert_eq!(result[i].data.unserialize(), raw_entries[i].data.unserialize());
         }
     }
 }
