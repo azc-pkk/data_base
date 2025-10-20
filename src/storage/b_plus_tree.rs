@@ -1,6 +1,8 @@
 use std::{
     cell::{RefCell}, rc::Rc
 };
+use rand::rand_core::le;
+
 use crate::error::BPlusTreeError;
 
 /// 用一个序列化字符串存数据
@@ -133,11 +135,11 @@ where
 
     fn new(data_set: Vec<DataEntry<K>>, max_data_length: usize, key_size: usize) -> Self {
         // FIXME: 设定页大小，改叶子结点最大数据条数
-        let leaf_max_entries = 1;
+        let leaf_max_entries = 4;
         // 构建叶子结点
         let leaves = Self::build_leaf_nodes(data_set, leaf_max_entries);
         // FIXME: 设定页大小，改中间结点最大孩子数
-        let max_children_cnt = 2;
+        let max_children_cnt = 4;
         // 构建中间节点
         let mut internals = Self::build_internal_nodes(leaves, max_children_cnt);
         // 只有一个节点时可以直接把它当根节点
@@ -323,7 +325,7 @@ where
                     leaf.entries.insert(insert_pos, data);
                     if leaf.entries.len() > self.leaf_max_entries {
                         drop(node_borrow);
-                        let new_node = Self::spilt(Rc::clone(&node), self.leaf_max_entries);
+                        let new_node = Self::spilt(Rc::clone(&node));
                         return InsertState::Splited(new_node);
                     }
                     return InsertState::Success;
@@ -346,7 +348,7 @@ where
 
                     if internal.keys.len() > self.max_children_cnt {
                         drop(node_borrow);
-                        InsertState::Splited(Self::spilt(node, self.max_children_cnt))
+                        InsertState::Splited(Self::spilt(node))
                     } else {
                         InsertState::Success
                     }
@@ -358,13 +360,11 @@ where
         }
     }
 
-    // FIXME：这里用实际大小的一半可以，用 max_size 的一半会报错，这是为什么？
     /// 返回分裂出的右边节点。左边节点保存在原本的变量中。
-    fn spilt(node: Rc<RefCell<BPlusTreeNode<K>>>, max_size: usize) -> Rc<RefCell<BPlusTreeNode<K>>> {
+    fn spilt(node: Rc<RefCell<BPlusTreeNode<K>>>) -> Rc<RefCell<BPlusTreeNode<K>>> {
         let mut node_borrow = node.borrow_mut();
         match &mut *node_borrow {
             BPlusTreeNode::Internal(internal) => {
-                // let mid = max_size / 2;
                 let mid = internal.keys.len() / 2;
                 Rc::new(RefCell::new(BPlusTreeNode::Internal(InternalNode {
                     keys: internal.keys.split_off(mid),
@@ -372,7 +372,6 @@ where
                 })))
             },
             BPlusTreeNode::Leaf(leaf) => {
-                // let mid = max_size / 2;
                 let mid = leaf.entries.len() / 2;
                 let new_node = Rc::new(RefCell::new(BPlusTreeNode::Leaf(LeafNode {
                     entries: leaf.entries.split_off(mid),
