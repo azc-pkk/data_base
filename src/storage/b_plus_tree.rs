@@ -65,6 +65,39 @@ where
     Leaf(LeafNode<K>)
 }
 
+impl<K> BPlusTreeNode<K>
+where
+    K: Ord + Clone,
+{
+    fn as_leaf(&self) -> Option<&LeafNode<K>> {
+        match self {
+            BPlusTreeNode::Leaf(leaf) => Some(leaf),
+            _ => None,
+        }
+    }
+
+    fn as_leaf_mut(&mut self) -> Option<&mut LeafNode<K>> {
+        match self {
+            BPlusTreeNode::Leaf(leaf) => Some(leaf),
+            _ => None
+        }
+    }
+
+    fn as_internal(&self) -> Option<&InternalNode<K>> {
+        match self {
+            BPlusTreeNode::Internal(internal) => Some(internal),
+            _ => None,
+        }
+    }
+
+    fn as_internal_mut(&mut self) -> Option<&mut InternalNode<K>> {
+        match self {
+            BPlusTreeNode::Internal(internal) => Some(internal),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct InternalNode<K>
 where
@@ -104,7 +137,7 @@ where
     max_children_cnt: usize,
 }
 
-/// 插入操作的结果
+
 #[derive(Debug, Clone)]
 enum InsertState<K>
 where
@@ -112,6 +145,13 @@ where
 {
     Success,
     Splited(Rc<RefCell<BPlusTreeNode<K>>>),
+    Failed(BPlusTreeError)
+}
+
+
+#[derive(Debug, Clone)]
+enum RemoveState {
+    Success,
     Failed(BPlusTreeError)
 }
 
@@ -150,6 +190,18 @@ where
             root: Rc::clone(&internals[0]),
             leaf_max_entries,
             max_children_cnt
+        }
+    }
+
+    fn get_node_length(node: Rc<RefCell<BPlusTreeNode<K>>>) -> usize {
+        let node_borrow = node.borrow();
+        match &*node_borrow {
+            BPlusTreeNode::Internal(internal) => {
+                internal.children.len()
+            },
+            BPlusTreeNode::Leaf(leaf) => {
+                leaf.entries.len()
+            }
         }
     }
 
@@ -357,6 +409,99 @@ where
                 }
             }
             other => other,
+        }
+    }
+
+    pub fn remove(&self, key: K) -> RemoveState {
+        // 使用栈来存储父节点。
+        let mut stack: Vec<Rc<RefCell<BPlusTreeNode<K>>>> = vec![];
+        let result = self.remove_recursive(Rc::clone(&self.root), key, &mut stack);
+        todo!()
+    }
+
+    /// 递归删除，用栈来保存经过的节点。
+    /// 需要平衡时每次取三个节点合并后分裂
+    /// 
+    fn remove_recursive(&self, node: Rc<RefCell<BPlusTreeNode<K>>>, key: K, stack: &mut Vec<Rc<RefCell<BPlusTreeNode<K>>>>) -> RemoveState {
+        let mut node_borrow_mut = node.borrow_mut();
+        let balance_required = {
+            match &mut *node_borrow_mut {
+                BPlusTreeNode::Internal(internal) => {
+                    let remove_pos = internal.keys.partition_point(|x| *x < key);
+                    if remove_pos == internal.keys.len() {
+                        return RemoveState::Failed(BPlusTreeError::BPlusTreeRemoveError);
+                    }
+
+                    // 递归调用前先入栈
+                    stack.push(Rc::clone(&node));
+
+                    let child = Rc::clone(&internal.children[remove_pos]);
+                    let result = self.remove_recursive(child, key, stack);
+                    if matches!(&result, RemoveState::Failed(_)) {
+                        return result;
+                    }
+
+                    internal.keys.len() < self.max_children_cnt / 2
+                },
+                BPlusTreeNode::Leaf(leaf) => {
+                    let remove_pos = leaf.entries.partition_point(|x| x.key < key);
+                    if remove_pos == leaf.entries.len() {
+                        return RemoveState::Failed(BPlusTreeError::BPlusTreeRemoveError);
+                    }
+
+                    leaf.entries.remove(remove_pos);
+                    leaf.entries.len() < self.leaf_max_entries / 2
+                }
+            }
+        };
+
+        // 找父节点
+        let parent_borrow = stack[stack.len() - 1].borrow();
+        let inner_parent = parent_borrow.as_internal().unwrap();
+        // 获得当前节点在父节点孩子列表中的位置
+        let max_key = Self::get_max_key_of_node(Rc::clone(&node));
+        let child_pos = inner_parent.keys.partition_point(|x| *x < max_key);
+        // 找用于合并的兄弟节点
+        // FIXME:考虑节点不够的情况
+        let left_sibling = if child_pos == 0 { Rc::clone(&inner_parent.children[child_pos+2])} else { Rc:: clone(&inner_parent.children[child_pos-1]) };
+        let right_sibling = if child_pos == inner_parent.keys.len() - 1 { Rc::clone(&inner_parent.children[child_pos-2]) } else { Rc::clone(&inner_parent.children[child_pos+1]) };
+        Self::merge(Rc::clone(&node), left_sibling);
+        Self::merge(Rc::clone(&node), right_sibling);
+        
+        let split_required = {
+            let len = Self::get_node_length(Rc::clone(&node));
+            let node_borrow = node.borrow();
+            if matches!(&*node_borrow, BPlusTreeNode::Internal(_)) {
+                len > self.max_children_cnt
+            }
+            else {
+                len > self.leaf_max_entries
+            }
+        };
+        if split_required {
+            let new_node = Self::spilt(Rc::clone(&node));
+        }
+
+        todo!()
+    }
+
+    /// 将 `node2` 合并到 `node1` 中，**需要用到可变引用**
+    fn merge(node1: Rc<RefCell<BPlusTreeNode<K>>>, node2: Rc<RefCell<BPlusTreeNode<K>>>) {
+        // 中间节点和叶子结点分情况讨论
+        let is_internal = if matches!(*node1.borrow(), BPlusTreeNode::Internal(_)) { true } else { false };
+        let mut node1_borrow_mut = node1.borrow_mut();
+        let mut node2_borrow_mut = node2.borrow_mut();
+        if is_internal {
+            let internal1 = node1_borrow_mut.as_internal_mut().unwrap();
+            let internal2 = node2_borrow_mut.as_internal_mut().unwrap();
+            internal1.children.append(&mut internal2.children);
+            internal1.keys.append(&mut internal2.keys);
+        }
+        else {
+            let leaf1 = node1_borrow_mut.as_leaf_mut().unwrap();
+            let leaf2 = node2_borrow_mut.as_leaf_mut().unwrap();
+            leaf1.entries.append(&mut leaf2.entries);
+            leaf1.next = leaf2.next.clone();
         }
     }
 
